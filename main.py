@@ -18,7 +18,6 @@ CONSTANTS = {
 def fetch_and_process_data():
     print(f"[INFO] Fetching data for: {CONSTANTS['TICKERS']}")
     
-    # 1. Download with Auto Adjust (Crucial for total return accuracy)
     try:
         raw_data = yf.download(
             CONSTANTS['TICKERS'], 
@@ -31,8 +30,6 @@ def fetch_and_process_data():
         print(f"[ERROR] Failed to download data: {e}")
         sys.exit(1)
 
-    # 2. Preprocessing: Strict DropNA
-    # Forbidden: ffill (Do not fill holidays, it dulls the sensitivity)
     df = raw_data.dropna()
     
     if df.empty:
@@ -78,7 +75,6 @@ def calculate_indicators(df):
     }
 
     # --- D. Risk Parameters (Yen & Rate) ---
-    # JPY=X: USD/JPY. A drop means Yen appreciation (Yen strength).
     results['yen_change_5d'] = df['JPY=X'].pct_change(5).iloc[-1]
     results['ief_change_10d'] = df['IEF'].pct_change(10).iloc[-1]
 
@@ -89,8 +85,6 @@ def evaluate_logic(indicators):
     is_distorted = indicators['distortion']['gap'] >= CONSTANTS['DISTORTION_THRESHOLD']
     
     # 2. Trigger A: Credit Crunch
-    # Logic: Ratio < MA20 AND Ratio is at 20-day Low AND SPX is still strong (>MA50)
-    # Using a small tolerance for float comparison on 'min'
     is_credit_low = indicators['credit']['val'] <= (indicators['credit']['min20'] * 1.0001)
     is_credit_downtrend = indicators['credit']['val'] < indicators['credit']['ma20']
     is_spx_high = indicators['spx']['price'] > indicators['spx']['ma50']
@@ -101,8 +95,6 @@ def evaluate_logic(indicators):
     trigger_b = indicators['yen_change_5d'] < CONSTANTS['YEN_SHOCK_THRESHOLD']
 
     # 4. Trigger C: Bad Rate Spike
-    # Logic: Rates spiked (IEF crashed) AND Stocks fell. 
-    # (Filters out "Good Rate Hikes" where stocks go up)
     is_rate_crash = indicators['ief_change_10d'] < CONSTANTS['RATE_SHOCK_THRESHOLD']
     is_stock_down = indicators['spx']['change_10d'] < CONSTANTS['SPX_FILTER_THRESHOLD']
     
@@ -116,65 +108,111 @@ def evaluate_logic(indicators):
     }
 
 def print_report(inds, logic):
-    print("\n" + "-"*50)
-    print("[CALCULATION REPORT] v7.1")
-    
-    # 1. Distortion
-    gap_pct = inds['distortion']['gap'] * 100
-    cond_str = "[TRUE]" if logic['condition'] else "[FALSE]"
-    print(f"\n1. Condition: Market Distortion (XLG/RSP)")
-    print(f"   - Gap vs MA200: {gap_pct:+.2f}% (Threshold: +15%)")
-    print(f"   >>> CONDITION: {cond_str}")
+    # Helper to format percentages
+    def fmt_pct(val):
+        return f"{val*100:+.2f}%"
 
-    # 2. Trigger A
+    print("\n" + "="*60)
+    print("📊 市場構造・危機検知レポート (v7.1)")
+    print("="*60)
+    
+    # --- 1. Market Distortion ---
+    gap = inds['distortion']['gap']
+    gap_str = fmt_pct(gap)
+    threshold_str = fmt_pct(CONSTANTS['DISTORTION_THRESHOLD'])
+    
+    print(f"\n1. Condition: Market Distortion (市場の歪み)")
+    print(f"   結果: {gap_str} (閾値: {threshold_str}) → [{'TRUE' if logic['condition'] else 'FALSE'}]")
+    print("   [分析]:")
+    
+    if logic['condition']:
+        print("   ⚠️ 危険水域です。トップ50社への資金集中が歴史的な水準(+15%超)に達しています。")
+        print("   崩壊時のエネルギー（燃料）が満タンの状態です。着火に注意してください。")
+    else:
+        if gap > 0:
+            print(f"   データ上は「正常範囲内」です。直近200日の平均的な歪み方と大きな差がありません。")
+            print("   歪んでいる状態が常態化（Baseline化）しており、新たな乖離加速は見られません。")
+        else:
+            print("   歪みは解消されています。トップ50社とそれ以外が連動、あるいは循環物色されています。")
+
+    # --- 2. Trigger A: Credit Crunch ---
     cred_val = inds['credit']['val']
     cred_ma = inds['credit']['ma20']
-    cred_min = inds['credit']['min20']
-    trig_a_str = "[TRUE]" if logic['trigger_a'] else "[FALSE]"
-    print(f"\n2. Trigger A: Credit Crunch (HYG/IEF)")
-    print(f"   - Current Ratio: {cred_val:.4f}")
-    print(f"   - 20d Trend: {'Bearish' if cred_val < cred_ma else 'Bullish'}")
-    print(f"   - At 20d Low?: {'YES' if cred_val <= cred_min * 1.0001 else 'NO'}")
-    print(f"   - SPX Context: {'High (>MA50)' if inds['spx']['price'] > inds['spx']['ma50'] else 'Low'}")
-    print(f"   >>> TRIGGER A: {trig_a_str}")
+    trend_str = "Bearish(下落)" if cred_val < cred_ma else "Bullish(上昇)"
+    
+    print(f"\n2. Trigger A: Credit Crunch (信用の収縮)")
+    print(f"   結果: Trend: {trend_str}, 最安値更新: {'YES' if logic['trigger_a'] else 'NO'} → [{'TRUE' if logic['trigger_a'] else 'FALSE'}]")
+    print("   [分析]:")
+    
+    if logic['trigger_a']:
+        print("   ⛔ 危険信号点灯！株価は高いのに、債券市場で「ジャンク債」が捨てられています。")
+        print("   「質への逃避」が始まっています。典型的な暴落の先行指標です。")
+    elif cred_val >= cred_ma:
+        print("   ジャンク債が国債に対して強く、トレンドは上昇(Bullish)です。")
+        print("   これは「倒産リスクなんて誰も気にしていない（イケイケドンドン）」という状態です。")
+        print("   暴落の気配は微塵もありません。")
+    else:
+        print("   信用スプレッドはやや悪化していますが、決定的な安値更新には至っていません。")
+        print("   まだ「調整」の範囲内です。")
 
-    # 3. Trigger B
-    yen_chg = inds['yen_change_5d'] * 100
-    trig_b_str = "[TRUE]" if logic['trigger_b'] else "[FALSE]"
-    print(f"\n3. Trigger B: Liquidity Shock (USD/JPY)")
-    print(f"   - 5-Day Change: {yen_chg:+.2f}% (Threshold: -3.0%)")
-    print(f"   >>> TRIGGER B: {trig_b_str}")
+    # --- 3. Trigger B: Liquidity Shock ---
+    yen_chg = inds['yen_change_5d']
+    yen_str = fmt_pct(yen_chg)
+    thresh_yen = fmt_pct(CONSTANTS['YEN_SHOCK_THRESHOLD'])
+    
+    print(f"\n3. Trigger B: Liquidity Shock (円キャリー)")
+    print(f"   結果: {yen_str} (閾値: {thresh_yen}) → [{'TRUE' if logic['trigger_b'] else 'FALSE'}]")
+    print("   [分析]:")
+    
+    if logic['trigger_b']:
+        print("   ⛔ 危険信号点灯！急激な「円高」が進行しています。")
+        print("   円キャリー取引の巻き戻し（強制決済）による、世界的な換金売りリスクが高まっています。")
+    elif yen_chg > 0:
+        print("   プラス値は「ドル高・円安」を意味します。")
+        print("   現在は真逆です。むしろ円安が進んでおり、キャリー取引による資金供給（燃料注入）が続いています。")
+    else:
+        print("   円高方向への動きですが、パニック的な水準（-3%超）ではありません。")
+        print("   通常の変動範囲内です。")
 
-    # 4. Trigger C
-    ief_chg = inds['ief_change_10d'] * 100
-    spx_chg = inds['spx']['change_10d'] * 100
-    trig_c_str = "[TRUE]" if logic['trigger_c'] else "[FALSE]"
-    print(f"\n4. Trigger C: Bad Rate Spike (Filter applied)")
-    print(f"   - IEF 10d Change: {ief_chg:+.2f}% (Threshold: -2.0%)")
-    print(f"   - SPX 10d Change: {spx_chg:+.2f}%")
-    print(f"   >>> TRIGGER C: {trig_c_str}")
+    # --- 4. Trigger C: Bad Rate Spike ---
+    ief_chg = inds['ief_change_10d']
+    spx_chg = inds['spx']['change_10d']
+    
+    print(f"\n4. Trigger C: Bad Rate Spike (悪い金利上昇)")
+    print(f"   結果: 債券 {fmt_pct(ief_chg)}, 株価 {fmt_pct(spx_chg)} → [{'TRUE' if logic['trigger_c'] else 'FALSE'}]")
+    print("   [分析]:")
+    
+    if logic['trigger_c']:
+        print("   ⚠️ 警告！「悪い金利上昇」です。")
+        print("   金利急騰（債券急落）に対し、株価が耐えきれず下落しています。バリュエーション調整の合図です。")
+    elif ief_chg < CONSTANTS['RATE_SHOCK_THRESHOLD']:
+        print("   金利は急騰（債券急落）していますが、株価は上昇しています。")
+        print("   これは典型的な『良い金利上昇（業績相場・トランプトレード）』です。")
+        print("   フィルターが機能し、正常と判定しました。")
+    else:
+        print("   金利のパニック的な急騰は見られません。落ち着いています。")
 
-    print("-" * 50)
+    print("-" * 60)
     
     # --- FINAL JUDGMENT ---
     if logic['trigger_a'] or logic['trigger_b']:
         level = "LEVEL 5: CRITICAL (崩壊)"
-        msg = "【システムの逆回転】信用収縮(A) または 流動性枯渇(B) が発生。即時撤退推奨。"
+        msg = "【システムの逆回転】信用収縮(A) または 流動性枯渇(B) が発生。\n即時撤退を推奨します。"
     elif logic['trigger_c']:
         level = "LEVEL 4: WARNING (警戒)"
-        msg = "【バリュエーション調整】悪い金利上昇(C) が発生。ポジション縮小推奨。"
+        msg = "【バリュエーション調整】悪い金利上昇(C) が発生。\nポジション縮小を推奨します。"
     elif logic['condition']:
         level = "LEVEL 3: OVERHEATED (過熱)"
-        msg = "【バブル温存】歪みは大だがトリガーなし。静観・準備。"
+        msg = "【バブル温存】歪みは大ですがトリガーなし。\n静観・準備フェーズです。"
     else:
         level = "LEVEL 1: NORMAL (正常)"
-        msg = "【順行】システムは正常稼働中。"
+        msg = "【順行】システムは正常稼働中。\n投資継続で問題ありません。"
 
-    print(f"\n{'#'*50}")
+    print(f"\n{'#'*60}")
     print(f"   {level}")
-    print(f"{'#'*50}")
-    print(f"\n[MESSAGE]\n{msg}\n")
-    print(f"{'#'*50}\n")
+    print(f"{'#'*60}")
+    print(f"\n[総合判定メッセージ]\n{msg}\n")
+    print(f"{'#'*60}\n")
 
 if __name__ == "__main__":
     df = fetch_and_process_data()
